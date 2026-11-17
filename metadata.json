@@ -1,0 +1,6 @@
+{
+  "name": "Jupiter Notebook",
+  "description": "Dark-themed interactive code notebook IDE with persistent Python and Node.js kernels, command palette, and integrated bash terminal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
