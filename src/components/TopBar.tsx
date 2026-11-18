@@ -5,10 +5,12 @@ interface TopBarProps {
   sidebarOpen: boolean;
   sidebarTab: 'files' | 'outline' | 'variables';
   terminalOpen: boolean;
+  webViewOpen: boolean;
   isExecutingAll: boolean;
   onToggleFiles: () => void;
   onToggleVariables: () => void;
   onToggleTerminal: () => void;
+  onToggleWebView: () => void;
   onOpenCommands: () => void;
   onRunAll: () => void;
 }
@@ -17,10 +19,12 @@ export const TopBar: React.FC<TopBarProps> = ({
   sidebarOpen,
   sidebarTab,
   terminalOpen,
+  webViewOpen,
   isExecutingAll,
   onToggleFiles,
   onToggleVariables,
   onToggleTerminal,
+  onToggleWebView,
   onOpenCommands,
   onRunAll,
 }) => {
@@ -34,7 +38,7 @@ export const TopBar: React.FC<TopBarProps> = ({
         Jupiter Notebook
       </span>
 
-      {/* Zone 2: 4 single-line workspace navigation controls */}
+      {/* Zone 2: 5 single-line workspace navigation controls */}
       <nav aria-label="Workspace panels" className="flex items-center gap-6 overflow-x-auto">
         <button
           type="button"
@@ -68,6 +72,17 @@ export const TopBar: React.FC<TopBarProps> = ({
           }`}
         >
           Terminal
+        </button>
+        <button
+          type="button"
+          onClick={onToggleWebView}
+          className={`${linkBase} ${
+            webViewOpen
+              ? 'text-[#F0F6FC] border-blue-500'
+              : 'text-[#8B949E] border-transparent hover:text-[#E6EDF3]'
+          }`}
+        >
+          Web View
         </button>
         <button
           type="button"

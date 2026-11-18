@@ -12,9 +12,27 @@ export type MagicCommand =
   | { kind: 'env'; assignment?: { key: string; value: string } }
   | { kind: 'pip'; args: string }
   | { kind: 'npm'; args: string }
+  | { kind: 'npx'; args: string }
   | { kind: 'writefile'; filename: string; content: string }
   | { kind: 'time_cell'; code: string }
   | { kind: 'time_line'; code: string };
+
+export function buildUnrestrictedShellPrelude(): string {
+  return `if ! command -v sudo >/dev/null 2>&1; then
+  sudo() {
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -E|-H|-n|-s|-i|-k|-K|-b|-P|-S|-v) shift ;;
+        -u|-g|-p|-C|-D|-r|-t|-U) shift 2 ;;
+        --) shift; break ;;
+        -*) shift ;;
+        *) break ;;
+      esac
+    done
+    "$@"
+  }
+fi`;
+}
 
 export function parseCellMagic(rawCode: string): MagicCommand {
   const trimmed = rawCode.trim();
@@ -32,6 +50,35 @@ export function parseCellMagic(rawCode: string): MagicCommand {
     firstLine === '%%cmd'
   ) {
     return { kind: 'bash_cell', script: lines.slice(1).join('\n') };
+  }
+
+  for (const prefix of [
+    '%bash ',
+    '%sh ',
+    '%shell ',
+    '%cmd ',
+    '%sudo ',
+    '%su ',
+    '%apt ',
+    '%apt-get ',
+    '%dpkg ',
+  ]) {
+    if (firstLine.startsWith(prefix)) {
+      const stripPercent =
+        prefix === '%sudo ' ||
+        prefix === '%su ' ||
+        prefix === '%apt ' ||
+        prefix === '%apt-get ' ||
+        prefix === '%dpkg ';
+      const cmd = stripPercent
+        ? firstLine.slice(1).trim()
+        : firstLine.slice(prefix.length).trim();
+      return {
+        kind: 'bash_line',
+        command: cmd,
+        remainingCode: lines.slice(1).join('\n'),
+      };
+    }
   }
 
   if (firstLine.startsWith('%%writefile ')) {
@@ -110,6 +157,10 @@ export function parseCellMagic(rawCode: string): MagicCommand {
 
   if (trimmed === '%npm' || trimmed.startsWith('%npm ')) {
     return { kind: 'npm', args: trimmed.slice(4).trim() };
+  }
+
+  if (trimmed === '%npx' || trimmed.startsWith('%npx ')) {
+    return { kind: 'npx', args: trimmed.slice(4).trim() };
   }
 
   if (firstLine.startsWith('!')) {

@@ -3,7 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import type { CellOutput, KernelLanguage, KernelVariable } from '../src/types/notebook';
-import { parseCellMagic, resolveCommandTargetPath } from './kernelHelpers';
+import {
+  buildUnrestrictedShellPrelude,
+  parseCellMagic,
+  resolveCommandTargetPath,
+} from './kernelHelpers';
 
 interface PendingRequest {
   resolve: (value: { outputs?: CellOutput[]; variables?: KernelVariable[] }) => void;
@@ -125,9 +129,21 @@ class KernelProcess {
 
   private runShell(command: string): Promise<CellOutput[]> {
     return new Promise((resolve) => {
-      const child = spawn('bash', ['-c', command], {
+      const localBin = path.join(this.cwd, 'node_modules', '.bin');
+      const basePath = this.envOverrides.PATH || process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+      const fullPath = basePath.includes(localBin) ? basePath : `${localBin}:${basePath}`;
+      const script = `${buildUnrestrictedShellPrelude()}\n${command}`;
+
+      const child = spawn('bash', ['-c', script], {
         cwd: this.cwd,
-        env: { ...process.env, ...this.envOverrides },
+        env: {
+          DEBIAN_FRONTEND: 'noninteractive',
+          APT_LISTCHANGES_FRONTEND: 'none',
+          NEEDRESTART_MODE: 'a',
+          ...process.env,
+          ...this.envOverrides,
+          PATH: fullPath,
+        },
       });
       let stdout = '';
       let stderr = '';
@@ -165,24 +181,54 @@ class KernelProcess {
     const execNum = this.executionCount;
 
     try {
-      const magic = parseCellMagic(rawCode);
-      let outputs: CellOutput[] = [];
+      const outputs = await this.executeInner(rawCode, execNum);
 
-      if (magic.kind === 'bash_cell') {
-        outputs = await this.runShell(magic.script);
-      } else if (magic.kind === 'bash_line') {
-        const shellOutputs = await this.runShell(magic.command);
-        outputs.push(...shellOutputs);
-        if (magic.remainingCode.trim()) {
-          const res = await this.sendRequest('exec', { code: magic.remainingCode });
-          outputs.push(...(res.outputs ?? []));
-        }
-      } else if (magic.kind === 'pwd') {
-        outputs.push({
-          output_type: 'execute_result',
-          execution_count: execNum,
-          data: { 'text/plain': JSON.stringify(this.cwd) },
-        });
+      const finalOutputs = outputs.map((o) =>
+        o.output_type === 'execute_result' ? { ...o, execution_count: execNum } : o
+      );
+
+      return {
+        outputs: finalOutputs,
+        executionCount: execNum,
+        executionTimeMs: Date.now() - start,
+      };
+    } catch (err) {
+      return {
+        outputs: [
+          {
+            output_type: 'error',
+            ename: 'KernelError',
+            evalue: err instanceof Error ? err.message : String(err),
+            traceback: [err instanceof Error ? err.message : String(err)],
+          },
+        ],
+        executionCount: execNum,
+        executionTimeMs: Date.now() - start,
+      };
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private async executeInner(rawCode: string, execNum: number): Promise<CellOutput[]> {
+    const magic = parseCellMagic(rawCode);
+    let outputs: CellOutput[] = [];
+
+    if (magic.kind === 'bash_cell') {
+      outputs = await this.runShell(magic.script);
+    } else if (magic.kind === 'bash_line') {
+      const shellOutputs = await this.runShell(magic.command);
+      outputs.push(...shellOutputs);
+      if (magic.remainingCode.trim()) {
+        const more = await this.executeInner(magic.remainingCode, execNum);
+        outputs.push(...more);
+      }
+    } else if (magic.kind === 'pwd') {
+      outputs.push({
+        output_type: 'execute_result',
+        execution_count: execNum,
+        data: { 'text/plain': JSON.stringify(this.cwd) },
+      });
       } else if (magic.kind === 'cd') {
         const target = magic.target || this.workspaceDir;
         const resolved = resolveCommandTargetPath(
@@ -235,6 +281,8 @@ class KernelProcess {
         outputs = await this.runShell(`python3 -m pip ${magic.args}`.trim());
       } else if (magic.kind === 'npm') {
         outputs = await this.runShell(`npm ${magic.args}`.trim());
+      } else if (magic.kind === 'npx') {
+        outputs = await this.runShell(`npx ${magic.args}`.trim());
       } else if (magic.kind === 'writefile') {
         if (!magic.filename) {
           throw new Error('Usage: %%writefile <filename>');
@@ -295,32 +343,8 @@ class KernelProcess {
         outputs = res.outputs ?? [];
       }
 
-      outputs = outputs.map((o) =>
-        o.output_type === 'execute_result' ? { ...o, execution_count: execNum } : o
-      );
-
-      return {
-        outputs,
-        executionCount: execNum,
-        executionTimeMs: Date.now() - start,
-      };
-    } catch (err) {
-      return {
-        outputs: [
-          {
-            output_type: 'error',
-            ename: 'KernelError',
-            evalue: err instanceof Error ? err.message : String(err),
-            traceback: [err instanceof Error ? err.message : String(err)],
-          },
-        ],
-        executionCount: execNum,
-        executionTimeMs: Date.now() - start,
-      };
-    } finally {
-      this.busy = false;
+      return outputs;
     }
-  }
 
   async getVariables(): Promise<KernelVariable[]> {
     try {

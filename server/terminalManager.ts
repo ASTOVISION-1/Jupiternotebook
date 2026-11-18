@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { TerminalSessionInfo } from '../src/types/notebook';
+import { buildUnrestrictedShellPrelude } from './kernelHelpers';
 
 interface TerminalSession {
   id: string;
@@ -134,7 +135,8 @@ export class TerminalManager {
       `jupiter-term-${id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}.meta`
     );
 
-    const wrappedScript = `${command}
+    const wrappedScript = `${buildUnrestrictedShellPrelude()}
+${command}
 __ec=$?
 {
   printf "%s\\0" "$PWD"
@@ -142,10 +144,18 @@ __ec=$?
 } > "${metaFile}" 2>/dev/null
 exit $__ec`;
 
+    const localBin = path.join(session.cwd, 'node_modules', '.bin');
+    const basePath = session.env.PATH || process.env.PATH || '/usr/local/bin:/usr/bin:/bin';
+    const fullPath = basePath.includes(localBin) ? basePath : `${localBin}:${basePath}`;
+
     const child = spawn('bash', ['-c', wrappedScript], {
       cwd: session.cwd,
       env: {
+        DEBIAN_FRONTEND: 'noninteractive',
+        APT_LISTCHANGES_FRONTEND: 'none',
+        NEEDRESTART_MODE: 'a',
         ...session.env,
+        PATH: fullPath,
         PYTHONUNBUFFERED: '1',
         TERM: 'xterm-256color',
         FORCE_COLOR: '1',
@@ -155,15 +165,27 @@ exit $__ec`;
 
     session.activeChild = child;
 
-    child.stdout.on('data', (rawChunk) => {
-      handlers.onStdout(String(rawChunk));
-    });
+    let finished = false;
+    let exitDrainTimer: NodeJS.Timeout | null = null;
+    let exitCodeCaptured: number | null = null;
 
-    child.stderr.on('data', (rawChunk) => {
-      handlers.onStderr(String(rawChunk));
-    });
+    const onStdout = (rawChunk: Buffer | string) => {
+      if (!finished) handlers.onStdout(String(rawChunk));
+    };
+    const onStderr = (rawChunk: Buffer | string) => {
+      if (!finished) handlers.onStderr(String(rawChunk));
+    };
 
-    child.on('close', (code) => {
+    const finalize = (code: number) => {
+      if (finished) return;
+      finished = true;
+      if (exitDrainTimer) {
+        clearTimeout(exitDrainTimer);
+        exitDrainTimer = null;
+      }
+      child.stdout.off('data', onStdout);
+      child.stderr.off('data', onStderr);
+
       session!.activeChild = null;
       session!.busy = false;
 
@@ -208,10 +230,27 @@ exit $__ec`;
       }
 
       handlers.onDone({
-        exitCode: code ?? 0,
+        exitCode: code,
         cwd: nextCwd,
         durationMs: Date.now() - start,
       });
+    };
+
+    child.stdout.on('data', onStdout);
+    child.stderr.on('data', onStderr);
+
+    child.on('exit', (code) => {
+      exitCodeCaptured = code ?? 0;
+      if (!finished && !exitDrainTimer) {
+        // Allow stdout/stderr pipes to flush, while ensuring backgrounded `&` children don't hang the prompt
+        exitDrainTimer = setTimeout(() => {
+          finalize(exitCodeCaptured ?? 0);
+        }, 120);
+      }
+    });
+
+    child.on('close', (code) => {
+      finalize(code ?? exitCodeCaptured ?? 0);
     });
 
     return () => {

@@ -118,6 +118,12 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
     keywords: 'bash shell console drawer',
   },
   {
+    id: 'terminal.toggle_fullscreen',
+    title: 'Terminal: Toggle Full Screen Mode',
+    category: 'Terminal',
+    keywords: 'fullscreen maximize bash shell terminal',
+  },
+  {
     id: 'terminal.new_session',
     title: 'Open New Terminal Session',
     category: 'Terminal',
@@ -132,9 +138,21 @@ export const COMMAND_DEFINITIONS: CommandDefinition[] = [
   },
   {
     id: 'terminal.toggle_permissions',
-    title: 'Toggle Command Permissions (All Allowed / Restricted)',
+    title: 'Command Permissions: All Allowed (root, apt, su, bash)',
     category: 'Terminal',
-    keywords: 'allow all permissions unrestricted sandbox bash shell',
+    keywords: 'allow all permissions unrestricted root apt su sudo bash shell',
+  },
+  {
+    id: 'webview.toggle',
+    title: 'Toggle Localhost Web View & Public Deploy',
+    category: 'View',
+    keywords: 'localhost port preview iframe deploy internet public url',
+  },
+  {
+    id: 'ports.refresh',
+    title: 'Refresh Detected Localhost Ports',
+    category: 'View',
+    keywords: 'ports localhost scan deploy server',
   },
   {
     id: 'file.new_notebook',

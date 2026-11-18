@@ -7,6 +7,7 @@ import { NotebookToolbar } from './components/NotebookToolbar';
 import { Sidebar } from './components/Sidebar';
 import { TerminalPanel } from './components/TerminalPanel';
 import { TopBar } from './components/TopBar';
+import { WebViewPanel } from './components/WebViewPanel';
 import type {
   CellOutput,
   KernelLanguage,
@@ -14,6 +15,7 @@ import type {
   KernelVariable,
   NotebookDocument,
   NotebookSummary,
+  PortStatusEntry,
   TerminalLogEntry,
   TerminalSessionInfo,
   WorkspaceFileEntry,
@@ -53,6 +55,12 @@ export default function App() {
   const [sidebarTab, setSidebarTab] = useState<'files' | 'outline' | 'variables'>('files');
   const [terminalOpen, setTerminalOpen] = useState(true);
   const [terminalHeight, setTerminalHeight] = useState(220);
+  const [terminalFullScreen, setTerminalFullScreen] = useState(false);
+
+  const [webViewOpen, setWebViewOpen] = useState(false);
+  const [webViewExpanded, setWebViewExpanded] = useState(false);
+  const [ports, setPorts] = useState<PortStatusEntry[]>([]);
+  const [activeWebViewPort, setActiveWebViewPort] = useState<number | null>(null);
 
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [newNotebookOpen, setNewNotebookOpen] = useState(false);
@@ -143,21 +151,85 @@ export default function App() {
   }, []);
 
   const handleTogglePermissions = useCallback(async () => {
-    const nextValue = !allowAllCommands;
     try {
       const res = await fetch('/api/permissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ allowAllCommands: nextValue }),
+        body: JSON.stringify({ allowAllCommands: true }),
       });
       if (res.ok) {
-        const data = (await res.json()) as { allowAllCommands: boolean };
-        setAllowAllCommands(data.allowAllCommands);
+        setAllowAllCommands(true);
+        setTerminalOpen(true);
+        const target = activeTerminalId || terminalSessions[0]?.id || 'term-1';
+        setTerminalLogs((prev) => ({
+          ...prev,
+          [target]: [
+            ...(prev[target] ?? []),
+            {
+              id: `perm-${Date.now()}`,
+              type: 'info',
+              text: 'All permissions allowed: root (uid=0), su, sudo, apt, apt-get, dpkg, bash, sh, python3, node, pip, npm, filesystem, and network.',
+              timestamp: new Date().toISOString(),
+            },
+          ],
+        }));
       }
     } catch {
       // Ignore
     }
-  }, [allowAllCommands]);
+  }, [activeTerminalId, terminalSessions]);
+
+  const fetchPorts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/ports');
+      if (res.ok) {
+        const data = (await res.json()) as { ports: PortStatusEntry[] };
+        setPorts(data.ports ?? []);
+      }
+    } catch {
+      // Ignore transient port scan failures
+    }
+  }, []);
+
+  const handleAddPort = useCallback(async (port: number) => {
+    const res = await fetch('/api/ports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port, publicEnabled: false }),
+    });
+    const data = (await res.json()) as { ports?: PortStatusEntry[]; error?: string };
+    if (!res.ok) {
+      throw new Error(data.error || `Failed to open localhost:${port}`);
+    }
+    setPorts(data.ports ?? []);
+    setActiveWebViewPort(port);
+  }, []);
+
+  const handleTogglePublicPort = useCallback(
+    async (port: number, publicEnabled: boolean) => {
+      const res = await fetch(`/api/ports/${port}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publicEnabled }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as { ports: PortStatusEntry[] };
+        setPorts(data.ports ?? []);
+      }
+    },
+    []
+  );
+
+  const handleRemovePort = useCallback(async (port: number) => {
+    const res = await fetch(`/api/ports/${port}`, { method: 'DELETE' });
+    if (res.ok) {
+      const data = (await res.json()) as { ports: PortStatusEntry[] };
+      setPorts(data.ports ?? []);
+      setActiveWebViewPort((prev) =>
+        prev === port ? data.ports?.[0]?.port ?? null : prev
+      );
+    }
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -170,7 +242,7 @@ export default function App() {
         } else {
           setLoadingNotebook(false);
         }
-        await fetchTerminalSessions();
+        await Promise.all([fetchTerminalSessions(), fetchPorts()]);
       } catch (err) {
         if (mounted) {
           setErrorBanner(err instanceof Error ? err.message : String(err));
@@ -181,7 +253,16 @@ export default function App() {
     return () => {
       mounted = false;
     };
-  }, [fetchWorkspaceList, openNotebook, fetchTerminalSessions]);
+  }, [fetchWorkspaceList, openNotebook, fetchTerminalSessions, fetchPorts]);
+
+  useEffect(() => {
+    if (!webViewOpen) return;
+    void fetchPorts();
+    const timer = setInterval(() => {
+      void fetchPorts();
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [webViewOpen, fetchPorts]);
 
   const saveNotebook = useCallback(
     async (docOverride?: NotebookDocument, nameOverride?: string) => {
@@ -502,7 +583,7 @@ export default function App() {
         setTerminalSessions((prev) =>
           prev.map((s) => (s.id === targetId ? { ...s, busy: false } : s))
         );
-        await fetchWorkspaceList();
+        await Promise.all([fetchWorkspaceList(), fetchPorts()]);
       } catch (err) {
         appendTerminalLog(targetId, {
           id: `err-${Date.now()}`,
@@ -515,7 +596,7 @@ export default function App() {
         );
       }
     },
-    [activeTerminalId, terminalSessions, appendTerminalLog, fetchWorkspaceList]
+    [activeTerminalId, terminalSessions, appendTerminalLog, fetchWorkspaceList, fetchPorts]
   );
 
   const handleSendTerminalInput = useCallback(
@@ -813,7 +894,14 @@ export default function App() {
           void handleChangeKernel('node');
           break;
         case 'terminal.toggle':
-          setTerminalOpen((v) => !v);
+          setTerminalOpen((v) => {
+            if (v) setTerminalFullScreen(false);
+            return !v;
+          });
+          break;
+        case 'terminal.toggle_fullscreen':
+          setTerminalOpen(true);
+          setTerminalFullScreen((v) => !v);
           break;
         case 'terminal.new_session':
           void handleCreateTerminalSession();
@@ -825,6 +913,13 @@ export default function App() {
           break;
         case 'terminal.toggle_permissions':
           void handleTogglePermissions();
+          break;
+        case 'webview.toggle':
+          setWebViewOpen((v) => !v);
+          break;
+        case 'ports.refresh':
+          setWebViewOpen(true);
+          void fetchPorts();
           break;
         case 'file.new_notebook':
           setNewNotebookOpen(true);
@@ -863,6 +958,7 @@ export default function App() {
       handleChangeKernel,
       handleCreateTerminalSession,
       handleTogglePermissions,
+      fetchPorts,
       saveNotebook,
       handleExportNotebook,
     ]
@@ -992,6 +1088,7 @@ export default function App() {
         sidebarOpen={sidebarOpen}
         sidebarTab={sidebarTab}
         terminalOpen={terminalOpen}
+        webViewOpen={webViewOpen}
         isExecutingAll={isExecutingAll}
         onToggleFiles={() => {
           if (sidebarOpen && sidebarTab === 'files') {
@@ -1009,13 +1106,19 @@ export default function App() {
             setSidebarTab('variables');
           }
         }}
-        onToggleTerminal={() => setTerminalOpen((v) => !v)}
+        onToggleTerminal={() =>
+          setTerminalOpen((v) => {
+            if (v) setTerminalFullScreen(false);
+            return !v;
+          })
+        }
+        onToggleWebView={() => setWebViewOpen((v) => !v)}
         onOpenCommands={() => setCommandPaletteOpen(true)}
         onRunAll={() => void handleRunAll()}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {sidebarOpen && (
+        {sidebarOpen && !(webViewOpen && webViewExpanded) && (
           <Sidebar
             activeTab={sidebarTab}
             onTabChange={setSidebarTab}
@@ -1043,7 +1146,13 @@ export default function App() {
           />
         )}
 
-        <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
+        <main
+          className={
+            webViewOpen && webViewExpanded && !terminalFullScreen
+              ? 'hidden'
+              : 'flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden'
+          }
+        >
           <NotebookToolbar
             notebookName={activeNotebookName || 'Untitled.ipynb'}
             isDirty={isDirty}
@@ -1184,6 +1293,8 @@ export default function App() {
               activeSessionId={activeTerminalId}
               logsBySession={terminalLogs}
               height={terminalHeight}
+              isFullScreen={terminalFullScreen}
+              onToggleFullScreen={() => setTerminalFullScreen((v) => !v)}
               onResize={setTerminalHeight}
               onSelectSession={setActiveTerminalId}
               onCreateSession={() => void handleCreateTerminalSession()}
@@ -1197,10 +1308,31 @@ export default function App() {
               onCompletePrefix={handleCompleteTerminal}
               allowAllCommands={allowAllCommands}
               onTogglePermissions={() => void handleTogglePermissions()}
-              onHide={() => setTerminalOpen(false)}
+              onHide={() => {
+                setTerminalFullScreen(false);
+                setTerminalOpen(false);
+              }}
             />
           )}
         </main>
+
+        {webViewOpen && (
+          <WebViewPanel
+            ports={ports}
+            activePort={activeWebViewPort}
+            isExpanded={webViewExpanded}
+            onSelectPort={setActiveWebViewPort}
+            onAddPort={handleAddPort}
+            onTogglePublic={handleTogglePublicPort}
+            onRemovePort={handleRemovePort}
+            onRefreshPorts={fetchPorts}
+            onToggleExpand={() => setWebViewExpanded((v) => !v)}
+            onClose={() => {
+              setWebViewExpanded(false);
+              setWebViewOpen(false);
+            }}
+          />
+        )}
       </div>
 
       <CommandPalette

@@ -65,3 +65,31 @@ test('resolveCommandTargetPath allows arbitrary paths when unrestricted and rest
   );
   assert.throws(() => resolveCommandTargetPath(root, '../other', false, root));
 });
+
+test('parseCellMagic supports single-line %bash, %sh, %npx, %sudo, %su, and %apt magics', () => {
+  assert.deepEqual(parseCellMagic('%bash echo ok'), {
+    kind: 'bash_line',
+    command: 'echo ok',
+    remainingCode: '',
+  });
+  assert.deepEqual(parseCellMagic('%sh pwd\n!ls'), {
+    kind: 'bash_line',
+    command: 'pwd',
+    remainingCode: '!ls',
+  });
+  assert.deepEqual(parseCellMagic('%npx tsx -v'), {
+    kind: 'npx',
+    args: 'tsx -v',
+  });
+  assert.deepEqual(parseCellMagic('%apt update'), {
+    kind: 'bash_line',
+    command: 'apt update',
+    remainingCode: '',
+  });
+  assert.deepEqual(parseCellMagic('%su -c id'), {
+    kind: 'bash_line',
+    command: 'su -c id',
+    remainingCode: '',
+  });
+});
+

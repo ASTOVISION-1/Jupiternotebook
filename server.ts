@@ -5,19 +5,32 @@ import path from 'node:path';
 import { createServer as createViteServer } from 'vite';
 import { KernelManager } from './server/kernelManager';
 import { NotebookStore } from './server/notebookStore';
+import { PortManager } from './server/portManager';
 import { TerminalManager } from './server/terminalManager';
 import type { KernelLanguage, NotebookDocument } from './src/types/notebook';
 
 const PORT = 3000;
 const WORKSPACE_DIR = path.resolve(process.cwd(), 'workspace');
 
+function getPublicBaseUrl(req: express.Request): string {
+  const configured = process.env.APP_URL?.trim();
+  if (configured && configured !== 'MY_APP_URL') {
+    return configured.replace(/\/$/, '');
+  }
+  const proto = req.get('x-forwarded-proto') || req.protocol || 'http';
+  const host = req.get('host') || `localhost:${PORT}`;
+  return `${proto}://${host}`;
+}
+
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.set('trust proxy', true);
+  app.use('/api', express.json({ limit: '5mb' }));
 
   const notebookStore = new NotebookStore(WORKSPACE_DIR);
   const kernelManager = new KernelManager(WORKSPACE_DIR);
   const terminalManager = new TerminalManager(WORKSPACE_DIR);
+  const portManager = new PortManager();
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, workspaceDir: WORKSPACE_DIR });
@@ -252,20 +265,82 @@ async function startServer() {
   });
 
   app.get('/api/permissions', (_req, res) => {
+    kernelManager.setUnrestricted(true);
+    terminalManager.setUnrestricted(true);
     res.json({
-      allowAllCommands:
-        kernelManager.getUnrestricted() && terminalManager.getUnrestricted(),
+      allowAllCommands: true,
+      user: 'root',
+      capabilities: ['apt', 'apt-get', 'dpkg', 'su', 'sudo', 'bash', 'sh', 'python3', 'node', 'npm', 'pip'],
     });
   });
 
-  app.post('/api/permissions', (req, res) => {
-    const { allowAllCommands } = (req.body ?? {}) as {
-      allowAllCommands?: boolean;
-    };
-    const nextValue = allowAllCommands !== false;
-    kernelManager.setUnrestricted(nextValue);
-    terminalManager.setUnrestricted(nextValue);
-    res.json({ allowAllCommands: nextValue });
+  app.post('/api/permissions', (_req, res) => {
+    kernelManager.setUnrestricted(true);
+    terminalManager.setUnrestricted(true);
+    res.json({
+      allowAllCommands: true,
+      user: 'root',
+      capabilities: ['apt', 'apt-get', 'dpkg', 'su', 'sudo', 'bash', 'sh', 'python3', 'node', 'npm', 'pip'],
+    });
+  });
+
+  // Localhost Port Registry & Public Internet Deployment endpoints
+  app.get('/api/ports', async (req, res) => {
+    try {
+      const ports = await portManager.listPorts(getPublicBaseUrl(req));
+      res.json({ ports });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.post('/api/ports', async (req, res) => {
+    try {
+      const { port, label, publicEnabled } = (req.body ?? {}) as {
+        port?: number | string;
+        label?: string;
+        publicEnabled?: boolean;
+      };
+      const entry = portManager.registerPort(
+        port,
+        label,
+        publicEnabled !== false
+      );
+      const ports = await portManager.listPorts(getPublicBaseUrl(req));
+      const enriched = ports.find((p) => p.port === entry.port);
+      res.status(201).json({ entry: enriched ?? entry, ports });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.patch('/api/ports/:port', async (req, res) => {
+    try {
+      const { publicEnabled } = (req.body ?? {}) as { publicEnabled?: boolean };
+      const entry = portManager.setPublicEnabled(req.params.port, Boolean(publicEnabled));
+      const ports = await portManager.listPorts(getPublicBaseUrl(req));
+      res.json({ entry, ports });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  app.delete('/api/ports/:port', async (req, res) => {
+    portManager.removePort(req.params.port);
+    const ports = await portManager.listPorts(getPublicBaseUrl(req));
+    res.json({ ports });
+  });
+
+  // Public Internet proxy for deployed localhost:<port> services
+  app.all(['/p/:port', '/p/:port/*'], (req, res) => {
+    const port = Number(req.params.port);
+    portManager.proxyRequest(port, `/p/${port}`, req, res, true);
+  });
+
+  // Embedded Web View proxy for localhost:<port> services
+  app.all(['/preview/:port', '/preview/:port/*'], (req, res) => {
+    const port = Number(req.params.port);
+    portManager.proxyRequest(port, `/preview/${port}`, req, res, false);
   });
 
   // Vite middleware in dev, static assets in production

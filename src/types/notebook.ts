@@ -104,3 +104,16 @@ export interface TerminalSessionInfo {
   cwd: string;
   busy: boolean;
 }
+
+export interface PortStatusEntry {
+  port: number;
+  label: string;
+  publicEnabled: boolean;
+  createdAt: string;
+  online: boolean;
+  detected: boolean;
+  localUrl: string;
+  previewPath: string;
+  publicUrl: string;
+}
+

@@ -69,11 +69,11 @@ export const NotebookToolbar: React.FC<NotebookToolbarProps> = ({
   return (
     <div className="px-4 py-1.5 bg-[#0E131B] border-b border-white/[0.08] flex items-center justify-between gap-3 shrink-0 overflow-x-auto">
       {/* Left: Active notebook title + unboxed metadata */}
-      <div className="flex items-center gap-2 min-w-0 shrink">
-        <h1 className="text-[13px] font-semibold text-[#F0F6FC] truncate max-w-[210px]">
+      <div className="flex items-center gap-2 min-w-0 overflow-hidden">
+        <h1 className="text-[13px] font-semibold text-[#F0F6FC] truncate">
           {notebookName}
         </h1>
-        <div className="hidden xl:flex items-center gap-1.5 text-[11px] text-[#8B949E] font-mono tabular-nums whitespace-nowrap">
+        <div className="hidden 2xl:flex items-center gap-1.5 text-[11px] text-[#8B949E] font-mono tabular-nums whitespace-nowrap shrink-0">
           <span aria-hidden="true">·</span>
           <span>{isSaving ? 'Saving…' : isDirty ? 'Unsaved' : 'Saved'}</span>
           <span aria-hidden="true">·</span>
